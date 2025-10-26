@@ -1,7 +1,7 @@
 filename,breed,confidence,rationale
 bull_terrier.jpg,Bull Terrier,0.98,Distinctive egg-shaped head and muscular body typical of Bull Terriers.
 chihuahua.jpg,Long-Haired Chihuahua,0.95,"Small size, long coat, large ears, and curled tail typical of breed."
-german_shepherd.jpg,German Shepherd,0.98,"Distinct black and tan coat, erect ears, and strong build."
+german_shepherd.jpg,German Shepherd,0.98,"Distinct black and tan coat, erect ears, strong build."
 golden_retriever.jpg,Golden Retriever,0.97,"Golden coat, medium-large build, friendly expression, feathered tail."
-husky.jpg,Siberian Husky,0.98,"Blue eyes, erect ears, thick coat, wolf-like markings."
-labrador_retriever.jpg,Labrador Retriever,0.97,"Yellow coat, broad head, friendly expression, typical Labrador build."
+husky.jpg,Siberian Husky,0.98,"Blue eyes, erect ears, thick coat, and wolf-like markings."
+labrador_retriever.jpg,Labrador Retriever,0.97,"Yellow coat, broad head, friendly expression, sturdy build typical of Labradors."
