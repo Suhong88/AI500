@@ -45,7 +45,12 @@ RECORDS_FILE = HERE / "my_records.json"
 REPORT_FILE = HERE / "my_chatbot_results.html"
 DESIGN_MODEL = "gpt-6.2-astra"      # drafts and changes the bot (a few calls per team)
 JUDGE_MODEL = "gpt-6.2-sol"         # checks each test conversation against what should happen
-CHAT_MODELS = ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4"]   # the chatbot itself; the first is the default
+CHAT_MODELS = ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4", "gpt-5.5"]   # the chatbot itself; the first is the default
+# What students see in the model dropdowns. (GPT-6 models need the Responses API for tools, so they are not listed.)
+CHAT_CHOICES = [("gpt-5.4-nano: fastest, lowest cost, least capable", "gpt-5.4-nano"),
+                ("gpt-5.4-mini: fast, low cost, good with tools (default)", "gpt-5.4-mini"),
+                ("gpt-5.4: more capable, higher cost", "gpt-5.4"),
+                ("gpt-5.5: newest and most capable, highest cost", "gpt-5.5")]
 EMBED_MODEL = "text-embedding-3-small"
 MAX_TOOLS = 6
 
@@ -1929,7 +1934,8 @@ def build():
                         "numbers (4.50). Then click **Save this table**.")
             first_table = next(iter(BOT["tables"]), None)
             with gr.Row():
-                table_dd = gr.Dropdown(list(BOT["tables"]), value=first_table, label="Table", scale=2)
+                table_dd = gr.Dropdown(list(BOT["tables"]), value=first_table, scale=2,
+                                       label="Table (your bot can have several: choose one here to see and edit it)")
                 cols_tb = gr.Textbox(", ".join(BOT["tables"][first_table]["columns"]) if first_table else "",
                                      label="Columns (separated by commas)", scale=3)
                 cols_btn = gr.Button("Change columns", scale=1)
@@ -1938,7 +1944,7 @@ def build():
                 save_table_btn = gr.Button("💾 Save this table", variant="primary")
                 del_table_btn = gr.Button("🗑️ Delete this table")
             table_out = gr.Markdown()
-            with gr.Accordion("Add a table", open=False):
+            with gr.Accordion("Add a table, or load one from a CSV file", open=False):
                 with gr.Row():
                     nt_name = gr.Textbox(label="New table name")
                     nt_cols = gr.Textbox(label="Its columns (separated by commas)")
@@ -1971,7 +1977,7 @@ def build():
                     gr.Markdown("**Test this tool.** Write a request in plain English. The chat model turns it into the "
                                 "tool's details, and our code runs the tool.")
                     tt_req = gr.Textbox(label="Request", placeholder="for example: price 2 large lattes with oat milk")
-                    tt_model = gr.Dropdown(CHAT_MODELS, value=CHAT_MODELS[0], label="Chat model")
+                    tt_model = gr.Dropdown(CHAT_CHOICES, value=CHAT_MODELS[0], label="Chat model")
                     tt_btn = gr.Button("▶️ Test this tool", variant="primary")
                     skip_btn = gr.Button("🚫 Try to save without the customer's confirmation")
                     tt_out = gr.Markdown()
@@ -2007,7 +2013,7 @@ def build():
                 save_tests_btn = gr.Button("💾 Save the tests")
                 suggest_btn = gr.Button("✨ Suggest tests")
             with gr.Row():
-                run_model = gr.Dropdown(CHAT_MODELS, value=CHAT_MODELS[0], label="Chat model to test")
+                run_model = gr.Dropdown(CHAT_CHOICES, value=CHAT_MODELS[0], label="Chat model to test")
                 run_btn = gr.Button("▶️ Run all tests", variant="primary")
             tests_out = gr.Markdown()
             run_dd = gr.Dropdown([], label="Test run", interactive=True)
@@ -2031,7 +2037,7 @@ def build():
                     with gr.Row():
                         send = gr.Button("Send", variant="primary")
                         new_chat = gr.Button("New conversation")
-                    chat_model = gr.Dropdown(CHAT_MODELS, value=CHAT_MODELS[0], label="Chat model")
+                    chat_model = gr.Dropdown(CHAT_CHOICES, value=CHAT_MODELS[0], label="Chat model")
                 with gr.Column(scale=2):
                     tools_box = gr.Textbox(label="Tool calls this turn", lines=19, interactive=False)
             gr.Markdown("**What your bot saved** (orders, bookings, tickets...)")
