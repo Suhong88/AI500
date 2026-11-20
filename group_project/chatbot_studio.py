@@ -200,7 +200,8 @@ BLANK = {"business_name": "", "business_type": "", "description": "", "instructi
          "tables": {}, "documents": [], "tools": [], "tests": []}
 BOT = deepcopy(EXAMPLES["Sunrise Bagels (orders)"])
 HISTORY = []                       # earlier versions of BOT, for Undo
-RESULTS = {"runs": [], "chats": [], "tool_tests": []}
+RESULTS = {"runs": [], "chats": [], "tool_tests": [], "fixes": []}
+SUGGESTIONS = []                   # the latest "Suggest fixes" result: [{"tests", "cause", "change", "where", "kind"}]
 USAGE = {"design_tokens": 0}
 
 
@@ -1667,13 +1668,50 @@ def run_one(i, test, model):
             "log": ctx.log, "verdict": verdict, "reason": reason, "mine": "", "notes": ""}
 
 
+def clue(r):
+    """A free, rule-based hint for a test that did not pass: where to look, never the fix (no AI involved)."""
+    log = "\n".join(r["log"])
+    tools = {t["name"]: t["type"] for t in BOT["tools"]}
+    called = {line.split("(", 1)[0] for line in r["log"]}
+    if not r["log"]:
+        return ("The bot called no tools in this conversation. Did it answer from memory? Which tool should it have "
+                "used here, and does a rule in tab 2 tell it to use that tool?")
+    if "There is no price yet" in log:
+        return ("The bot tried to save before it had a price. Look at the order of the tool calls: is there a rule in "
+                "tab 2 telling it to price the order first?")
+    if "Missing details" in log:
+        return ("A save tool reported missing details. Did the bot ask the customer for them? Compare the fields in "
+                "tab 4 with the questions the bot asked.")
+    if "has not answered yet" in log or log.count("not saved yet") >= 2:
+        return ("The save tool was waiting for the customer's yes. Find where the bot showed the summary: did it ask "
+                "the customer to confirm, and did it call the tool again after the yes?")
+    if "fully booked" in log or "not one of the open times" in log:
+        return ("A booking was refused. Compare the date and time the bot sent with the open slots in tab 3: is the "
+                "slot really open, and is it written the same way?")
+    if re.search(r"is not available|is not an available|is not one of the options|can only be added to|"
+                 r"Nothing matches", log):
+        return ("A tool said something is not available. Compare the customer's words with the rows in tab 3: is it "
+                "missing from your data, or written differently (spelling, size, name)?")
+    if any(tools.get(c) == "documents" for c in called):
+        return ("The bot searched your documents. Read the passages the tool returned: do they contain the answer? "
+                "If not, the document in tab 3 may be missing that information.")
+    price_wrong = re.search(r"\$|price|total|quote", r["reason"], re.I) and \
+        re.search(r"instead of|wrong|incorrect|did not match|mismatch", r["reason"], re.I)
+    if price_wrong and any(tools.get(c) == "calculate" for c in called):
+        return ("The price tool ran. Check the items and extras the bot sent to it: are they what the customer asked "
+                "for? Then compare the tool's total with the total the bot told the customer.")
+    return ("Compare the bot's replies with What should happen, one turn at a time. Where does it first go wrong, and "
+            "which tab controls that behavior: instructions and rules (2), data (3), or tools (4)?")
+
+
 def run_markdown(run):
     icon = {"pass": "✅", "partly": "🟡", "fail": "❌"}
     out = [f"## Run {run['n']}: {run['model']} ({run['time']}), {run['passed']} of {len(run['results'])} passed (AI check)"]
     for r in run["results"]:
+        hint = "" if r["verdict"] == "pass" else f"\n\n💡 **Clue:** {clue(r)}"
         out.append(f"### Test {r['n']} {icon.get(r['verdict'], '❔')} {r['verdict']}\n**Should:** {r['expect']}\n\n"
                    + "\n\n".join(f"> {l}".replace("\n", "\n> ") for l in r["transcript"].split("\n\n"))
-                   + f"\n\n**AI check:** {r['reason']}\n\n**Tool log:**\n```\n"
+                   + f"\n\n**AI check:** {r['reason']}{hint}\n\n**Tool log:**\n```\n"
                    + ("\n".join(l[:500] for l in r["log"]) or "(no tools called)") + "\n```")
     return "\n\n".join(out)
 
@@ -1732,6 +1770,167 @@ def on_save_verdicts(label, df):
             continue
         res["mine"], res["notes"] = r[4], r[5]
     return f"✅ Saved your verdicts for run {run['n']}."
+
+
+FIX_GUIDE = """**1. Find out why it failed.** Read the AI check's reason in the table, then open *Conversations and tool
+logs*: the tool log shows which tool the bot called, what it sent, and what the app's code returned.
+
+**2. Match the cause to the fix:**
+- The bot answered from memory, without calling a tool → add a rule in **tab 2** ("Always check open times before
+  offering a time").
+- The bot broke a business rule → make the rule more specific in **tab 2**.
+- A tool said "not available", or a price is wrong → fix the data in **tab 3**.
+- The bot never asked for a detail the tool needs → change the tool in **tab 4** ("also ask for the dog's size").
+- A policy answer is wrong → rewrite that part of the document in **tab 3**.
+- The bot was right but the test expected something else → fix the test, and say so in *My notes*.
+- The bot does the right steps but slips now and then → run the tests again with a stronger chat model and compare.
+
+**3. Run the tests again** and compare the runs (the *Test run* dropdown keeps every run). "8 of 12, then 11 of 12
+after fixing the rules" is good evidence for your report. Some failures cannot be fully fixed; report them honestly.
+
+**Stuck? Get help in this order:**
+1. Read the **💡 Clue** under each failed test in *Conversations and tool logs* (free, instant).
+2. Click **Give me hints**: the AI points to the evidence and asks a guiding question, but does not give the fix.
+3. Still stuck? Click **Suggest fixes**: the AI proposes changes, and you decide which ones to make.
+
+Explaining the cause in your own words, in *My notes* and your report, matters more than how you found it."""
+
+FIX_SYSTEM = (
+    "You help university students improve a customer-service chatbot they built in a no-code app. You get the bot "
+    "(instructions, rules, tables, documents, tools as JSON) and the tests that failed, each with the conversation, the "
+    "tool log (what the bot really called and what the app's code returned), the AI check's reason, and the student's "
+    "own verdict and notes. For each failure, find the most likely cause and propose ONE concrete change the student "
+    "can make in the app: the instructions or business rules (tab 2), a table row or a document (tab 3), a tool's "
+    "settings (tab 4), or the test itself (tab 5) when its expectation is wrong. If the bot's design is fine and the "
+    "chat model simply slipped, say so and suggest re-running the tests with a stronger chat model instead of a design "
+    "change. Merge failures with the same cause. Write for students without a technical background: plain English, no "
+    "JSON or code. Reply with JSON {\"suggestions\": [{\"tests\": [test numbers], \"cause\": one sentence, \"change\": "
+    "one sentence written as a request to the design assistant, e.g. 'Add a business rule: ...', \"where\": 'tab 2 "
+    "rules' | 'tab 3 data' | 'tab 3 documents' | 'tab 4 tools' | 'tab 5 tests' | 'chat model', \"kind\": 'bot' | 'test' "
+    "| 'model'}]} with at most 6 suggestions.")
+
+
+HINT_SYSTEM = (
+    "You are a teaching assistant. University students without a technical background built a customer-service chatbot "
+    "in a no-code app, and some of their tests failed. Help them find the cause THEMSELVES. Do NOT give the fix, the "
+    "rule text, or the answer. For each failed test (merge tests with the same cause): (1) point to the evidence: quote "
+    "the exact short phrase from the conversation or the tool log where things first go wrong; (2) ask one guiding "
+    "question that leads them toward the cause; (3) name where in the app to look (tab 2 instructions and rules, tab 3 "
+    "data or documents, tab 4 tools, tab 5 the test itself, or the chat model). Plain English, no JSON or code, "
+    "encouraging tone, at most 5 hints. Reply with JSON {\"hints\": [{\"tests\": [numbers], \"evidence\": quoted "
+    "phrase, \"question\": one sentence, \"where\": short place name}]}.")
+
+
+def failed_tests(label, df):
+    """(run, the tests that failed or partly passed, incl. the student's own 'fail' verdicts, as text for the model)."""
+    run = run_by_label(label)
+    if not run:
+        return None, [], ""
+    on_save_verdicts(label, df)
+    bad = [r for r in run["results"] if r["verdict"] != "pass" or norm(r.get("mine")) in ("fail", "partly", "failed")]
+    text = "\n\n".join(
+        f"TEST {r['n']}\nWhat should happen: {r['expect']}\nConversation:\n{r['transcript']}\nTool log:\n"
+        + ("\n".join(l[:600] for l in r["log"]) or "(no tools called)")
+        + f"\nAI check: {r['verdict']}: {r['reason']}\nStudent's verdict: {r.get('mine') or '-'}; notes: {r.get('notes') or '-'}"
+        for r in bad)
+    return run, bad, text
+
+
+def on_hints(label, df, progress=gr.Progress()):
+    """Guiding hints from the AI: evidence + a question + where to look, never the fix."""
+    run, bad, text = failed_tests(label, df)
+    if not run:
+        return "Run the tests first, then choose a test run above."
+    if not bad:
+        return "✅ Every test in this run passed (and you did not mark any as failed)."
+    if no_key():
+        return no_key()
+    progress(0.2, desc=f"Reading {len(bad)} failed test(s)...")
+    bot = {k: v for k, v in BOT.items() if k != "tests"}
+    try:
+        out = design_call([{"role": "system", "content": HINT_SYSTEM},
+                           {"role": "user", "content": "The bot:\n" + json.dumps(bot, ensure_ascii=False)
+                                                      + "\n\nThe failed tests:\n" + text}])
+    except Exception as e:
+        return f"⚠️ The AI could not answer: {type(e).__name__}: {e}. Try again."
+    hints = [h for h in out.get("hints", []) if isinstance(h, dict) and h.get("question")]
+    if not hints:
+        return "No clear hint this time. Start with the 💡 clues in *Conversations and tool logs* below."
+    lines = [f"### Hints for run {run['n']}",
+             "Use these to find the cause yourself, make the change in the tab named, and run the tests again. If you "
+             "are still stuck, try **Suggest fixes**."]
+    for k, h in enumerate(hints, 1):
+        t = ", ".join(str(x) for x in h.get("tests", []))
+        lines.append(f"**{k}. Test{'s' if ',' in t else ''} {t}**\n\n- *Look at:* “{h.get('evidence', '')}”\n"
+                     f"- *Ask yourself:* {h['question']}\n- *Where to look:* {h.get('where', '')}")
+    return "\n\n".join(lines)
+
+
+def on_suggest_fixes(label, df, progress=gr.Progress()):
+    """Ask the design model what to change, from the failed tests of the chosen run (the student's verdicts count)."""
+    hide = (gr.update(choices=[], value=[], visible=False), gr.update(visible=False))
+    run = run_by_label(label)
+    if not run:
+        return ("Run the tests first, then choose a test run above.",) + hide
+    on_save_verdicts(label, df)                       # use the verdicts the student has typed, even if not saved yet
+    bad = [r for r in run["results"]
+           if r["verdict"] != "pass" or norm(r.get("mine")) in ("fail", "partly", "failed")]
+    if not bad:
+        return ("✅ Every test in this run passed (and you did not mark any as failed). Nothing to fix.",) + hide
+    if no_key():
+        return (no_key(),) + hide
+    progress(0.2, desc=f"{DESIGN_MODEL} is reading {len(bad)} failed test(s)...")
+    tests = "\n\n".join(
+        f"TEST {r['n']}\nWhat should happen: {r['expect']}\nConversation:\n{r['transcript']}\nTool log:\n"
+        + ("\n".join(l[:600] for l in r["log"]) or "(no tools called)")
+        + f"\nAI check: {r['verdict']}: {r['reason']}\nStudent's verdict: {r.get('mine') or '-'}; notes: {r.get('notes') or '-'}"
+        for r in bad)
+    bot = {k: v for k, v in BOT.items() if k != "tests"}
+    try:
+        out = design_call([{"role": "system", "content": FIX_SYSTEM},
+                           {"role": "user", "content": "The bot:\n" + json.dumps(bot, ensure_ascii=False)
+                                                      + "\n\nThe failed tests:\n" + tests}])
+    except Exception as e:
+        return (f"⚠️ The design model failed: {type(e).__name__}: {e}. Try again.",) + hide
+    SUGGESTIONS.clear()
+    SUGGESTIONS.extend(s for s in out.get("suggestions", []) if isinstance(s, dict) and s.get("change"))
+    if not SUGGESTIONS:
+        return ("The AI found no clear change to make. Read the conversations and tool logs below, and use the "
+                "guide above.",) + hide
+    icon = {"bot": "🛠", "test": "📝", "model": "🔁"}
+    lines = [f"### Suggested fixes for run {run['n']} ({len(bad)} test(s) failed or partly passed)",
+             "Read each suggestion. Tick the ones you agree with below and click **Make the ticked changes**, or make "
+             "the change yourself in the tab named. You can undo a change in tab 1."]
+    for k, s in enumerate(SUGGESTIONS, 1):
+        t = ", ".join(str(x) for x in s.get("tests", []))
+        lines.append(f"**{k}. {icon.get(s.get('kind'), '🛠')} Test{'s' if ',' in t else ''} {t}** ({s.get('where', '')})\n\n"
+                     f"- *Why it failed:* {s.get('cause', '')}\n- *Suggested change:* {s['change']}")
+    lines.append("🔁 suggestions are about the chat model, not your design: re-run the tests with a stronger model "
+                 "and compare. 📝 suggestions change a test, so say why in *My notes*.")
+    choices = [f"{k}. {s['change']}" for k, s in enumerate(SUGGESTIONS, 1) if s.get("kind") != "model"]
+    return ("\n\n".join(lines), gr.update(choices=choices, value=[], visible=bool(choices)),
+            gr.update(visible=bool(choices)))
+
+
+def on_apply_fixes(picked, progress=gr.Progress()):
+    """Make the ticked changes with the design model (like 'Change anything by asking'), and record them."""
+    if not picked:
+        return ("Tick at least one suggested change first.",) + everything()
+    if no_key():
+        return (no_key(),) + everything()
+    changes = [re.sub(r"^\d+\.\s*", "", p) for p in picked]
+    request = "Make these changes, and nothing else:\n" + "\n".join(f"- {c}" for c in changes)
+    progress(0.2, desc=f"{DESIGN_MODEL} is making {len(changes)} change(s)...")
+    try:
+        bot, summary = design(request, deepcopy(BOT))
+    except Exception as e:
+        return (f"⚠️ The design model failed: {type(e).__name__}: {e}. Try again.",) + everything()
+    remember()
+    BOT.clear(); BOT.update(bot); save_bot()
+    RESULTS["fixes"].append({"time": datetime.now().strftime("%H:%M"), "after_run": len(RESULTS["runs"]),
+                             "changes": changes, "summary": summary})
+    return (f"### ✅ Changes made\n{summary}\n\nNow click **Run all tests** again and compare the runs. If a change "
+            "made things worse, click **Undo the last change** in tab 1.\n\n" + status_md(*check_bot(BOT)),) + everything()
 
 
 # ── tab 6: chat ──
@@ -1832,6 +2031,10 @@ def on_report():
                          for r in run["results"]) + "</table><details><summary>Conversations and tool logs</summary>" +
                  "".join(f"<h4>Test {r['n']}</h4><pre>{e(r['transcript'])}</pre><pre>{e(chr(10).join(r['log']) or '(no tools)')}</pre>"
                          for r in run["results"]) + "</details>")
+    if RESULTS["fixes"]:                          # changes made with "Suggest fixes", between test runs
+        runs += "<h3>Improvements made</h3><ol>" + "".join(
+            f"<li>After run {f['after_run']} ({f['time']}): " + "; ".join(e(c) for c in f["changes"])
+            + f"<br><i>{e(f['summary'])}</i></li>" for f in RESULTS["fixes"]) + "</ol>"
     chats = ""
     for k, c in enumerate([c for c in RESULTS["chats"] if c["messages"]], 1):
         chats += f"<h3>Chat {k} ({e(c['model'])})</h3>" + "".join(f"<p><b>{who}:</b> {e(t)}</p>" for who, t in c["messages"])
@@ -2022,6 +2225,16 @@ def build():
                                    label="Results: fill in My verdict (pass / partly / fail) and My notes")
             verdict_btn = gr.Button("💾 Save my verdicts")
             verdict_out = gr.Markdown()
+            with gr.Accordion("🛠 When a test fails: how to improve your bot", open=False):
+                gr.Markdown(FIX_GUIDE)
+            with gr.Row():
+                hint_btn = gr.Button("🔍 Give me hints (I'll fix it myself)")
+                fix_btn = gr.Button("💡 Suggest fixes for the failed tests")
+            hint_md = gr.Markdown()
+            fix_md = gr.Markdown()
+            fix_pick = gr.CheckboxGroup([], label="Changes to make (tick the ones you agree with)", visible=False)
+            fix_apply = gr.Button("🪄 Make the ticked changes", variant="primary", visible=False)
+            fix_out = gr.Markdown()
             with gr.Accordion("Conversations and tool logs", open=False):
                 run_md = gr.Markdown()
 
@@ -2106,6 +2319,9 @@ def build():
         run_btn.click(on_run_tests, [tests_grid, run_model], [tests_out, summary, run_md, run_dd])
         run_dd.change(on_pick_run, run_dd, [summary, run_md])
         verdict_btn.click(on_save_verdicts, [run_dd, summary], verdict_out)
+        hint_btn.click(on_hints, [run_dd, summary], hint_md)
+        fix_btn.click(on_suggest_fixes, [run_dd, summary], [fix_md, fix_pick, fix_apply])
+        fix_apply.click(on_apply_fixes, fix_pick, [fix_out] + ALL_OUT)
 
         msg.submit(on_chat, [msg, chatbot, conversation, chat_model], [msg, chatbot, conversation, tools_box])
         send.click(on_chat, [msg, chatbot, conversation, chat_model], [msg, chatbot, conversation, tools_box])
